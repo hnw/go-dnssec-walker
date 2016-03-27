@@ -1,39 +1,44 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/miekg/dns"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
+var debug *bool
+
 func main() {
-	var (
-		qtype  []uint16
-		qclass []uint16
-		qname  []string
-	)
-
-	aa := flag.Bool("aa", false, "set AA flag in query")
-	ad := flag.Bool("ad", false, "set AD flag in query")
-	cd := flag.Bool("cd", false, "set CD flag in query")
-	rd := flag.Bool("rd", true, "set RD flag in query")
-
-	query := flag.Bool("question", false, "show question")
+	debug = flag.Bool("debug", false, "enable debugging in the resolver")
 	port := flag.Int("port", 53, "port number to use")
-	fallback := flag.Bool("fallback", false, "fallback to 4096 bytes bufsize and after that TCP")
+	startfrom := flag.String("startfrom", "0", "start the zone walk at")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] [@nameserver] zone\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+	flag.Parse()
 
-	//qname = append(qname, "biz.")
-	//qtype = append(qtype, dns.TypeNSEC)
-	qname = append(qname, "-.biz")
-	qtype = append(qtype, dns.TypeA)
-	qclass = append(qclass, dns.ClassINET)
+	var nameserver, zone string
 
-	var nameserver string
+Flags:
+	for i := 0; i < flag.NArg(); i++ {
+		// If it starts with @ it is a nameserver
+		if flag.Arg(i)[0] == '@' {
+			nameserver = flag.Arg(i)
+			continue Flags
+		}
+		zone = flag.Arg(i)
+		break
+	}
 
-	{
+	if len(nameserver) == 0 {
 		conf, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -55,131 +60,134 @@ func main() {
 		nameserver = dns.Fqdn(nameserver) + ":" + strconv.Itoa(*port)
 	}
 
+	re, _ := regexp.Compile(`\.*$`)
+	zone = re.ReplaceAllString(zone, ".")
+
+	//r, _, _ := dnssecQuery(nameserver, "biz", dns.TypeNSEC)
+
+	prev := ``
+	next := *startfrom
+
+	for {
+		prev, next, _ = searchNsecGap(nameserver, next, zone)
+		if prev != `` {
+			fmt.Printf("%s.%s\n", prev, zone)
+		}
+		if next == `` {
+			break
+		}
+	}
+
+	//fmt.Printf("%v", r)
+	//fmt.Printf("\n;; query time: %.3d us, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
+}
+
+func searchNsecGap(a string, label string, zone string) (prev string, next string, err error) {
+	gap := strings.ToLower(label) + `-`
+	if len(gap) > 63 {
+		c := gap[62]
+
+		if c == '-' {
+			gap = gap[0:62] + `0`
+		} else if c == '9' {
+			gap = gap[0:62] + `a`
+		} else {
+			// TODO:63文字目がzの場合に多分死ぬ
+			gap = gap[0:62] + string(c+1)
+		}
+	}
+
+	qn := gap + `.` + zone
+	qt := dns.TypeA
+
+	re, _ := regexp.Compile(`^(([^\.]+\.)*([^\.]+)\.|)` + zone + `\.*$`)
+
+	retry := 0
+Redo:
+	in, _, err := dnssecQuery(a, qn, qt)
+
+	if err != nil {
+		if retry < 3 {
+			retry++
+			goto Redo
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	for _, rr := range in.Answer {
+		if rr.Header().Rrtype == dns.TypeA {
+			return rr.Header().Name, rr.(*dns.NSEC).NextDomain, nil
+		}
+	}
+	for _, rr := range in.Ns {
+		if rr.Header().Rrtype == dns.TypeNSEC {
+			prev := strings.ToLower(rr.Header().Name)
+			next := strings.ToLower(rr.(*dns.NSEC).NextDomain)
+
+			if !re.MatchString(prev) || !re.MatchString(next) {
+				continue
+			}
+			prev = re.ReplaceAllString(prev, "${3}")
+			next = re.ReplaceAllString(next, "${3}")
+
+			if prev < gap && (gap < next || next == ``) {
+				return prev, next, nil
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "no next domain\n%v", in)
+	os.Exit(2)
+	return
+}
+
+func dnssecQuery(a string, qn string, qt uint16) (r *dns.Msg, rtt time.Duration, err error) {
+
 	c := new(dns.Client)
-	t := new(dns.Transfer)
 	c.Net = "udp"
 
 	m := new(dns.Msg)
-	m.MsgHdr.Authoritative = *aa
-	m.MsgHdr.AuthenticatedData = *ad
-	m.MsgHdr.CheckingDisabled = *cd
-	m.MsgHdr.RecursionDesired = *rd
+	m.MsgHdr.Authoritative = false
+	m.MsgHdr.AuthenticatedData = false
+	m.MsgHdr.CheckingDisabled = false
+	m.MsgHdr.RecursionDesired = true
 	m.Question = make([]dns.Question, 1)
 	m.Opcode = dns.OpcodeQuery
 	m.Rcode = dns.RcodeSuccess
 
-	{
-		o := new(dns.OPT)
-		o.Hdr.Name = "."
-		o.Hdr.Rrtype = dns.TypeOPT
-		o.SetDo()
-		o.SetUDPSize(dns.DefaultMsgSize)
-		m.Extra = append(m.Extra, o)
-	}
-	qt := dns.TypeA
+	o := new(dns.OPT)
+	o.Hdr.Name = "."
+	o.Hdr.Rrtype = dns.TypeOPT
+	o.SetDo()
+	o.SetUDPSize(dns.DefaultMsgSize)
+	m.Extra = append(m.Extra, o)
+
 	qc := uint16(dns.ClassINET)
 
-Query:
-	for i, v := range qname {
-		if i < len(qtype) {
-			qt = qtype[i]
-		}
-		if i < len(qclass) {
-			qc = qclass[i]
-		}
-		m.Question[0] = dns.Question{dns.Fqdn(v), qt, qc}
-		m.Id = dns.Id()
-		if *query {
-			fmt.Printf("%s", m.String())
-			fmt.Printf("\n;; size: %d bytes\n\n", m.Len())
-		}
-		if qt == dns.TypeAXFR || qt == dns.TypeIXFR {
-			env, err := t.In(m, nameserver)
-			if err != nil {
-				fmt.Printf(";; %s\n", err.Error())
-				continue
-			}
-			envelope := 0
-			record := 0
-			for e := range env {
-				if e.Error != nil {
-					fmt.Printf(";; %s\n", e.Error.Error())
-					continue Query
-				}
-				for _, r := range e.RR {
-					fmt.Printf("%s\n", r)
-				}
-				record += len(e.RR)
-				envelope++
-			}
-			fmt.Printf("\n;; xfr size: %d records (envelopes %d)\n", record, envelope)
-			continue
-		}
-		r, _ /*rtt*/, e := c.Exchange(m, nameserver)
-	Redo:
-		if e != nil {
-			fmt.Printf(";; %s\n", e.Error())
-			continue
-		}
+	m.Question[0] = dns.Question{dns.Fqdn(qn), qt, qc}
+	m.Id = dns.Id()
 
-		if r.Id != m.Id {
+	r, rtt, err = c.Exchange(m, a)
+
+	if err != nil {
+		if *debug {
+			fmt.Printf(";; %s\n", err.Error())
+		}
+		return
+	}
+
+	if r.Id != m.Id {
+		if *debug {
 			fmt.Fprintf(os.Stderr, "Id mismatch\n")
-			return
 		}
-
-		if r.MsgHdr.Truncated && *fallback {
-			// First EDNS, then TCP
-			fmt.Printf(";; Truncated, trying TCP\n")
-			c.Net = "tcp"
-			r, _ /*rtt*/, e = c.Exchange(m, nameserver)
-			goto Redo
-		}
-
-		if r.MsgHdr.Truncated && !*fallback {
-			fmt.Printf(";; Truncated\n")
-		}
-
-		nextDomain(r)
-
-		fmt.Printf("%v", r)
-		//fmt.Printf("\n;; query time: %.3d µs, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
+		return r, rtt, errors.New("Id mismatch")
 	}
-}
 
-func nextDomain(in *dns.Msg) {
-	denial := make([]dns.RR, 0)
-	// nsec(3) live in the auth section
-	nsec := false
-	nsec3 := false
-	fmt.Fprintln(os.Stderr, in.Answer)
-	fmt.Fprintln(os.Stderr, in.Ns)
-	for _, rr := range in.Ns {
-		fmt.Fprintln(os.Stderr, "--=====")
-		if rr.Header().Rrtype == dns.TypeNSEC {
-			fmt.Fprintln(os.Stderr, rr.Header().Name)
-			fmt.Fprintln(os.Stderr, rr.(*dns.NSEC).NextDomain)
-			//fmt.Fprintln(os.Stderr, rr.(*dns.NSEC).TypeBitMap)
+	if r.MsgHdr.Truncated {
+		// First EDNS, then TCP
+		c.Net = "tcp"
+		r, rtt, err = c.Exchange(m, a)
+	}
 
-			denial = append(denial, rr)
-			nsec = true
-			continue
-		}
-		if rr.Header().Rrtype == dns.TypeNSEC3 {
-			fmt.Fprintln(os.Stderr, "nsec3")
-
-			denial = append(denial, rr)
-			nsec3 = true
-			continue
-		}
-	}
-	if nsec && nsec3 {
-		// What??! Both NSEC and NSEC3 in there?
-		return
-	}
-	if nsec3 {
-		return
-	}
-	if nsec {
-		return
-	}
+	return
 }
