@@ -7,7 +7,7 @@ walker(1) -- Retrieve a DNS zone using NSEC traversal
 
 ## DESCRIPTION
 
-`walker` retrieves a DNS zone from the default or supplied name server and prints each record to the standard output (like [DNSSEC Walker](https://josefsson.org/walker/) or `ldns-walk(1)`). It does this through NSEC-walking (following the chain of NSEC records) and 'guessing' the next non-existent owner name for each NSEC.
+`walker` retrieves a DNS zone from the default or supplied name server and prints each record to the standard output. It does this through NSEC-walking (following the chain of NSEC records) and 'guessing' the next non-existent owner name for each NSEC (just like [DNSSEC Walker](https://josefsson.org/walker/) or `ldns-walk(1)`).
 
 Of course the nameserver that is used must be DNSSEC-aware.
 
