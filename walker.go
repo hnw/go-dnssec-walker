@@ -13,12 +13,19 @@ import (
 	"time"
 )
 
-var debug *bool
+var (
+	debug     bool
+	port      int
+	startfrom string
+)
 
 func main() {
-	debug = flag.Bool("debug", false, "enable debugging in the resolver")
-	port := flag.Int("port", 53, "port number to use")
-	startfrom := flag.String("startfrom", "0", "start the zone walk at")
+	flag.BoolVar(&debug, "d", false, "enable debugging in the resolver")
+	flag.BoolVar(&debug, "debug", false, "enable debugging in the resolver")
+	flag.IntVar(&port, "p", 53, "port number to use")
+	flag.IntVar(&port, "port", 53, "port number to use")
+	flag.StringVar(&startfrom, "s", "0", "start the zone walk at")
+	flag.StringVar(&startfrom, "startfrom", "0", "start the zone walk at")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [@nameserver] zone\n", os.Args[0])
 		flag.PrintDefaults()
@@ -55,9 +62,9 @@ Flags:
 		nameserver = nameserver[1 : len(nameserver)-1]
 	}
 	if i := net.ParseIP(nameserver); i != nil {
-		nameserver = net.JoinHostPort(nameserver, strconv.Itoa(*port))
+		nameserver = net.JoinHostPort(nameserver, strconv.Itoa(port))
 	} else {
-		nameserver = dns.Fqdn(nameserver) + ":" + strconv.Itoa(*port)
+		nameserver = dns.Fqdn(nameserver) + ":" + strconv.Itoa(port)
 	}
 
 	re, _ := regexp.Compile(`\.*$`)
@@ -65,21 +72,23 @@ Flags:
 
 	//r, _, _ := dnssecQuery(nameserver, "biz", dns.TypeNSEC)
 
-	prev := ``
-	next := *startfrom
+	cand := startfrom
 
 	for {
-		prev, next, _ = searchNsecGap(nameserver, next, zone)
+		prev, next, e := searchNsecGap(nameserver, cand, zone)
+		if e != nil {
+			fmt.Fprint(os.Stderr, "ERROR: ")
+			fmt.Fprintln(os.Stderr, e)
+			os.Exit(2)
+		}
 		if prev != `` {
 			fmt.Printf("%s.%s\n", prev, zone)
 		}
 		if next == `` {
 			break
 		}
+		cand = next
 	}
-
-	//fmt.Printf("%v", r)
-	//fmt.Printf("\n;; query time: %.3d us, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
 }
 
 func searchNsecGap(a string, label string, zone string) (prev string, next string, err error) {
@@ -111,8 +120,7 @@ Redo:
 			retry++
 			goto Redo
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+
 	}
 
 	for _, rr := range in.Answer {
@@ -136,9 +144,11 @@ Redo:
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "no next domain\n%v", in)
-	os.Exit(2)
-	return
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "%v", in)
+	}
+	return ``, ``, errors.New("NSEC record not found")
 }
 
 func dnssecQuery(a string, qn string, qt uint16) (r *dns.Msg, rtt time.Duration, err error) {
@@ -170,15 +180,15 @@ func dnssecQuery(a string, qn string, qt uint16) (r *dns.Msg, rtt time.Duration,
 	r, rtt, err = c.Exchange(m, a)
 
 	if err != nil {
-		if *debug {
+		if debug {
 			fmt.Printf(";; %s\n", err.Error())
 		}
 		return
 	}
 
 	if r.Id != m.Id {
-		if *debug {
-			fmt.Fprintf(os.Stderr, "Id mismatch\n")
+		if debug {
+			fmt.Fprintln(os.Stderr, "Id mismatch")
 		}
 		return r, rtt, errors.New("Id mismatch")
 	}
