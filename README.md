@@ -7,23 +7,26 @@ walker(1) -- Retrieve a DNS zone using NSEC traversal
 
 ## DESCRIPTION
 
-`walker` retrieves a DNS zone from the default or supplied name server and prints each record to the standard output (like [DNSSEC Walker](https://josefsson.org/walker/) or ldns-walk(1)). It does this through NSEC-walking (following the chain of NSEC records) and 'guessing' the next non-existent owner name for each NSEC.
+`walker` retrieves a DNS zone from the default or supplied name server and prints each record to the standard output (like [DNSSEC Walker](https://josefsson.org/walker/) or `ldns-walk(1)`). It does this through NSEC-walking (following the chain of NSEC records) and 'guessing' the next non-existent owner name for each NSEC.
 
 Of course the nameserver that is used must be DNSSEC-aware.
 
 ## OPTIONS
 
--s <startfrom>
-: Optional name to start the zone walk at.  The default is to start walking from the start.  This option is useful if the tool failed or was intterupted in the middle of a large zone.
+<dl>
+    <dt>-s &lt;startfrom&gt;</dt>
+    <dd>Optional name to start the zone walk at.  The default is to start walking from the start.  This option is useful if the tool failed or was intterupted in the middle of a large zone.</dd>
 
--p port
-: Send the query to a non-standard port on the server, instead of the defaut port 53. This option would be used to test a name server that has been configured to listen for queries on a non-standard port number.
+    <dt>-p &lt;port&gt;</dt>
+    <dd>Send the query to a non-standard port on the server, instead of the defaut port 53. This option would be used to test a name server that has been configured to listen for queries on a non-standard port number.</dd>
 
--d
-: Enable debugging
+    <dt>-d</dt>
+    <dd>Enable debugging</dd>
 
-@nameserver
-: Send the queries to this nameserver.
+    <dt>@nameserver</dt>
+    <dd>Send the queries to this nameserver.</dd>
+</dl>
+
 
 ## EXAMPLE
 
@@ -48,7 +51,7 @@ zzz.moe.
 
 The MIT License
 
-Copyright (c) 2015 Yoshio HANAWA
+Copyright (c) 2016 Yoshio HANAWA
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
