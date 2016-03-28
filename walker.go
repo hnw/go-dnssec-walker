@@ -92,7 +92,7 @@ Flags:
 }
 
 func searchNsecGap(a string, label string, zone string) (prev string, next string, err error) {
-	gap := strings.ToLower(label) + `-`
+	gap := strings.ToLower(label) + `--`
 	if len(gap) > 63 {
 		c := gap[62]
 
